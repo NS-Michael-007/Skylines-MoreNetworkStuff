@@ -1,0 +1,9 @@
+# Visual Studio 缓存目录（必须忽略）
+.vs/
+bin/
+obj/
+*.user
+*.suo
+
+# 如果你不想上传本地编译用的 Harmony 库，可以取消下面这行的注释
+# lib/CitiesHarmony.Harmony.dll

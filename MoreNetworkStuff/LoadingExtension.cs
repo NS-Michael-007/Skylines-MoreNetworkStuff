@@ -4,10 +4,10 @@ using System.Reflection;
 using ColossalFramework;
 using ColossalFramework.Globalization;
 using ColossalFramework.UI;
+using HarmonyLib;
 using ICities;
 using MoreNetworkStuff.Detours;
 using MoreNetworkStuff.Redirection;
-using PrefabHook;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -15,58 +15,54 @@ namespace MoreNetworkStuff
 {
     public class LoadingExtension : LoadingExtensionBase
     {
-        private static FieldInfo _uiCategoryfield = typeof(PrefabInfo).GetField("m_UICategory", BindingFlags.NonPublic | BindingFlags.Instance);
+        // 供 Harmony 补丁访问，改为 internal 或 public
+        internal static FieldInfo _uiCategoryfield = typeof(PrefabInfo).GetField("m_UICategory", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        // 记录当前游戏模式
+        public static AppMode CurrentMode { get; private set; }
+
+        private static Harmony _harmony;
+        private static bool _isPatched = false;
 
         public static readonly string[] ConnectionNetworks =
         {
-            "Cargo Connection",
-            "Ship Dock",
-            "Ship Dockway",
-            "Pedestrian Connection",
-            "Pedestrian Connection Surface",
-            "Pedestrian Connection Underground",
-            "Pedestrian Connection Inside",
-            "Bus Station Stop",
-            "Bus Station Way",
+            "Cargo Connection", "Ship Dock", "Ship Dockway", "Pedestrian Connection",
+            "Pedestrian Connection Surface", "Pedestrian Connection Underground",
+            "Pedestrian Connection Inside", "Bus Station Stop", "Bus Station Way",
         };
-
 
         public override void OnCreated(ILoading loading)
         {
             base.OnCreated(loading);
-            if (!IsHooked())
+
+            // 记录当前模式
+            CurrentMode = loading.currentMode;
+
+            // 应用 Harmony 补丁（确保只应用一次）
+            if (!_isPatched)
             {
-                return;
+                _harmony = new Harmony("com.yourname.morenetworkstuff"); // 建议替换为你的唯一ID
+                _harmony.PatchAll();
+                _isPatched = true;
             }
-            switch (loading.currentMode)
+
+            // 处理 Detours 和 Redirection（保留原逻辑）
+            switch (CurrentMode)
             {
                 case AppMode.Game:
-                    NetInfoHook.OnPreInitialization += OnPreInitializationInGameAndMapEditor;
-                    NetInfoHook.Deploy();
-                    TransportInfoHook.OnPreInitialization += OnPreInitializationTI;
-                    TransportInfoHook.Deploy();
                     Redirector<DefaultToolGameDetour>.Deploy();
                     Redirector<PublicTransportPanelGameDetour>.Deploy();
                     break;
                 case AppMode.MapEditor:
                 case AppMode.AssetEditor:
-                    if (loading.currentMode == AppMode.MapEditor)
-                    {
-                        NetInfoHook.OnPreInitialization += OnPreInitializationInGameAndMapEditor;
-                        NetInfoHook.Deploy();
-                    }
-                    if (loading.currentMode == AppMode.AssetEditor)
+                    if (CurrentMode == AppMode.AssetEditor)
                     {
                         Redirector<RoadsGroupPanelAssetEditorDetour>.Deploy();
-                        NetInfoHook.OnPreInitialization += OnPreInitializationAssetEditor;
-                        NetInfoHook.Deploy();
                     }
-                    //TODO: enable canals in MapEditor
                     Redirector<GeneratedGroupPanelAssetAndMapEditorDetour>.Deploy();
                     Redirector<RoadsPanelAssetAndMapEditorDetour>.Deploy();
                     break;
                 case AppMode.ThemeEditor:
-                    break;
                 case AppMode.ScenarioEditor:
                     break;
                 default:
@@ -74,7 +70,8 @@ namespace MoreNetworkStuff
             }
         }
 
-        private static void OnPreInitializationTI(TransportInfo info)
+        // 改为 public static，供 Harmony 补丁调用
+        public static void OnPreInitializationTI(TransportInfo info)
         {
             if (info?.name != "Airplane")
             {
@@ -83,7 +80,8 @@ namespace MoreNetworkStuff
             info.m_pathVisibility = ItemClass.Availability.GameAndMap;
         }
 
-        private static void OnPreInitializationInGameAndMapEditor(NetInfo info)
+        // 改为 public static，供 Harmony 补丁调用
+        public static void OnPreInitializationInGameAndMapEditor(NetInfo info)
         {
             if (info?.name == null)
             {
@@ -95,12 +93,12 @@ namespace MoreNetworkStuff
             }
             if (info.name == "Pedestrian Connection" || info.name.Contains("Canal"))
             {
-                //info.m_placementStyle = ItemClass.Placement.Manual;
                 info.m_availableIn = ItemClass.Availability.All;
             }
         }
 
-        private static void OnPreInitializationAssetEditor(NetInfo info)
+        // 改为 public static，供 Harmony 补丁调用
+        public static void OnPreInitializationAssetEditor(NetInfo info)
         {
             if (!(info.name?.Contains("Pedestrian Connection") ?? false))
             {
@@ -118,11 +116,9 @@ namespace MoreNetworkStuff
         public override void OnLevelLoaded(LoadMode mode)
         {
             base.OnLevelLoaded(mode);
-            if (!IsHooked())
-            {
-                UIView.library.ShowModal<ExceptionPanel>("ExceptionPanel").SetMessage("Missing dependency", "'More Network Stuff' mod requires the 'Prefab Hook' mod to work properly. Please subscribe to the mod and restart the game!", false);
-                return;
-            }
+
+            // 【删除了 IsHooked() 检查，不再依赖 Prefab Hook 弹窗】
+
             if (mode == LoadMode.LoadGame || mode == LoadMode.NewGame || mode == LoadMode.NewGameFromScenario)
             {
                 Redirector<DefaultToolGameDetour>.Deploy();
@@ -130,30 +126,30 @@ namespace MoreNetworkStuff
             else if (mode == LoadMode.LoadAsset || mode == LoadMode.NewAsset)
             {
                 var pedestrianConnection = PrefabCollection<NetInfo>.FindLoaded("Pedestrian Connection");
-                pedestrianConnection.m_class.m_layer = ItemClass.Layer.Default | ItemClass.Layer.MetroTunnels;
+                if (pedestrianConnection != null) // 增加空检查防止崩溃
+                {
+                    pedestrianConnection.m_class.m_layer = ItemClass.Layer.Default | ItemClass.Layer.MetroTunnels;
+                }
             }
-            var locale = (Locale) typeof(LocaleManager).GetField("m_Locale", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(SingletonLite<LocaleManager>.instance);
+
+            var locale = (Locale)typeof(LocaleManager).GetField("m_Locale", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(SingletonLite<LocaleManager>.instance);
             var field = typeof(PrefabInfo).GetField("m_UICategory", BindingFlags.Instance | BindingFlags.NonPublic);
+
             for (uint i = 0; i < PrefabCollection<NetInfo>.PrefabCount(); i++)
             {
                 var info = PrefabCollection<NetInfo>.GetPrefab(i);
-                if (info == null)
-                {
-                    continue;
-                }
-                var key = new Locale.Key {m_Identifier = "NET_TITLE", m_Key = info.name};
-                if (!locale.Exists(key))
-                {
-                    locale.AddLocalizedString(key, info.name);
-                }
-                key = new Locale.Key {m_Identifier = "NET_DESC", m_Key = info.name};
-                if (!locale.Exists(key))
-                {
-                    locale.AddLocalizedString(key, info.name);
-                }
+                if (info == null) continue;
+
+                var key = new Locale.Key { m_Identifier = "NET_TITLE", m_Key = info.name };
+                if (!locale.Exists(key)) locale.AddLocalizedString(key, info.name);
+
+                key = new Locale.Key { m_Identifier = "NET_DESC", m_Key = info.name };
+                if (!locale.Exists(key)) locale.AddLocalizedString(key, info.name);
+
                 var thumb = Util.LoadTextureFromAssembly($"{typeof(MoreNetworkStuff).Name}.resource.thumb.png", false);
                 var tooltip = Util.LoadTextureFromAssembly($"{typeof(MoreNetworkStuff).Name}.resource.tooltip.png", false);
-                var atlas = Util.CreateAtlas(new[] {thumb, tooltip});
+                var atlas = Util.CreateAtlas(new[] { thumb, tooltip });
+
                 if (ConnectionNetworks.Contains(info.name))
                 {
                     info.m_Atlas = atlas;
@@ -165,13 +161,14 @@ namespace MoreNetworkStuff
                 }
                 else if (mode == LoadMode.LoadAsset || mode == LoadMode.NewAsset)
                 {
-                    var category = (string) field.GetValue(info);
+                    var category = (string)field.GetValue(info);
                     if (category == "LandscapingWaterStructures")
                     {
                         field.SetValue(info, "BeautificationPaths");
                     }
                 }
             }
+
             switch (mode)
             {
                 case LoadMode.NewGame:
@@ -184,7 +181,7 @@ namespace MoreNetworkStuff
 
         private static UIButton MakeButton(UIComponent component, string t)
         {
-            UIButton b = (UIButton) component.AddUIComponent(typeof(UIButton));
+            UIButton b = (UIButton)component.AddUIComponent(typeof(UIButton));
             b.text = t;
             b.width = 200;
             b.height = 24;
@@ -222,17 +219,11 @@ namespace MoreNetworkStuff
             Redirector<PublicTransportPanelGameDetour>.Revert();
             Redirector<RoadsPanelAssetAndMapEditorDetour>.Revert();
             Redirector<RoadsGroupPanelAssetEditorDetour>.Revert();
-            if (!IsHooked())
-            {
-                return;
-            }
-            TransportInfoHook.Revert();
-            NetInfoHook.Revert();
-        }
 
-        private static bool IsHooked()
-        {
-            return Util.IsModActive("Prefab Hook");
+            // 【删除了 PrefabHook 的 Revert 调用】
+
+            // 可选：如果你需要完全卸载 Harmony 补丁，可以在这里调用
+            // if (_harmony != null) _harmony.UnpatchAll("com.yourname.morenetworkstuff");
         }
 
         private static void RefreshPanelInGame()
